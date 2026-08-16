@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 #Bei jeder Aenderung hochzaehlen - wird beim Start geloggt, damit sichtbar ist,
 #welcher Stand tatsaechlich installiert ist.
-__version__ = "2026.08.16-ow4"
+__version__ = "2026.08.16-ow5"
 
 # Status Variable 16IN 1x pro Bus mit 8 Werten
 stat_in = {
@@ -1534,11 +1534,52 @@ def on_mqtt_disconnect(_client: mqtt.Client, _userdata, rc: int) -> None:
     log(f"MQTT Verbindung getrennt (rc={rc})", "WARNING")
 
 
+def _handle_discovery_echo(topic: str, payload: str) -> bool:
+    """
+    Merkt sich retained Discovery-Configs, die zu diesem Geraet gehoeren
+
+    Ohne das kennt ein frisch gestarteter Prozess nur die selbst veroeffentlichten
+    Topics und laesst Eintraege frueherer Laeufe (z.B. von Phantom-Modulen)
+    dauerhaft auf dem Broker stehen.
+
+    Returns:
+        bool: True wenn das Topic ein Discovery-Config war
+    """
+    ha_prefix = mqtt_settings.get("ha_prefix")
+    if not ha_prefix or not topic.startswith(f"{ha_prefix}/") or not topic.endswith("/config"):
+        return False
+    parts = topic.split("/")
+    device_id = mqtt_settings.get("client_id", "")
+    if len(parts) == 4 and payload and device_id and parts[2].startswith(f"{device_id}_"):
+        ha_discovery_topics.add(topic)
+    return True
+
+
+def collect_existing_discovery(timeout: float = 2.0) -> None:
+    """Liest die bereits retained veroeffentlichten Discovery-Configs dieses Geraets ein."""
+    if not mqtt_client or not mqtt_settings.get("ha_discovery"):
+        return
+    ha_prefix = mqtt_settings.get("ha_prefix")
+    if not ha_prefix:
+        return
+    pattern = f"{ha_prefix}/+/+/config"
+    try:
+        mqtt_client.subscribe(pattern)
+        time.sleep(timeout)
+        mqtt_client.unsubscribe(pattern)
+    except Exception as exc:
+        log(f"Discovery-Bestand konnte nicht gelesen werden: {exc}", "WARNING")
+        return
+    log("Vorhandene Discovery-Eintraege uebernommen: {0}".format(len(ha_discovery_topics)), "INFO")
+
+
 def on_mqtt_message(_client: mqtt.Client, _userdata, msg) -> None:
     try:
         payload = msg.payload.decode("utf-8", errors="ignore")
     except Exception:
         payload = ""
+    if _handle_discovery_echo(msg.topic, payload):
+        return
     command_prefix = mqtt_topics.get("command")
     if not command_prefix:
         return
@@ -1696,6 +1737,9 @@ def publish_ha_discovery() -> None:
                         "command_topic": f"{command_topic}/pwm/{kanal}/{adresse:02x}/{channel}",
                         "brightness": True,
                         "brightness_scale": 100,
+                        #"brightness" ist hier kein Farbmodus, sondern die Deklaration
+                        #"nur Helligkeit, keine Farbe" - ohne die Zeile faellt der Regler weg
+                        "supported_color_modes": ["brightness"],
                         "availability_topic": availability,
                         "unique_id": object_id,
                         "device": device_info,
@@ -2591,7 +2635,11 @@ if __name__ == '__main__':
         sys.exit(1)
 
     log(datetime.now())
-    
+
+    #Bestehende Discovery-Eintraege einlesen, damit verwaiste Entitaeten
+    #frueherer Laeufe beim naechsten publish_ha_discovery() entfernt werden:
+    collect_existing_discovery()
+
     #Modulsuche:
     modulSuche(1)
     
