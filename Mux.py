@@ -132,27 +132,30 @@ class Multiplex:
         finally:
             self._status_i2c = 1
 
-    def read_byte(self, kanal: int, address: int) -> Optional[int]:
+    def read_byte(self, kanal: int, address: int, quiet: bool = False) -> Optional[int]:
         """
         Liest ein Byte von einer I2C-Adresse
-        
+
         Args:
             kanal: Multiplexer-Kanal (0-3)
             address: I2C-Geräteadresse
-            
+            quiet: Fehlschlag nur auf DEBUG loggen (fuer den Adress-Scan,
+                   bei dem unbesetzte Adressen der Normalfall sind)
+
         Returns:
             Optional[int]: Gelesener Wert oder None bei Fehler
         """
         if not self._check_i2c():
             return None
-        
+
         self._status_i2c = 0
         try:
             self.select_channel(kanal)
             wert = self.bus.read_byte(address)
             return wert
         except Exception as e:
-            logger.error(f"Fehler beim Lesen (Kanal={kanal}, Addr={hex(address)}): {e}")
+            logger.log(logging.DEBUG if quiet else logging.ERROR,
+                       f"Fehler beim Lesen (Kanal={kanal}, Addr={hex(address)}): {e}")
             return None
         finally:
             self._status_i2c = 1
@@ -245,9 +248,9 @@ class Multiplex:
         """Veraltete Methode - Verwenden Sie write_byte_data()"""
         return self.write_byte_data(kanal, address, register, wert)
     
-    def readByte(self, kanal: int, address: int) -> Optional[int]:
+    def readByte(self, kanal: int, address: int, quiet: bool = False) -> Optional[int]:
         """Veraltete Methode - Verwenden Sie read_byte()"""
-        return self.read_byte(kanal, address)
+        return self.read_byte(kanal, address, quiet)
     
     def readByteData(self, kanal: int, address: int, register: int) -> Optional[int]:
         """Veraltete Methode - Verwenden Sie read_byte_data()"""

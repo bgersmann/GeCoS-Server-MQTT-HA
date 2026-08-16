@@ -94,6 +94,12 @@ class DS2482:
         self._owTripletSecondBit = 0
         self._owLastDevice = 0
         self._owLastDiscrepancy = 0
+        try:
+            #Geraete-Reset nach dem Einschalten, sonst kann der erste Bus-Reset scheitern
+            self.DS2482Reset()
+            time.sleep(0.001)
+        except Exception as e:
+            log(f"DS2482 auf {hex(self.I2C_ADDR)} nicht erreichbar: {e}", "ERROR")
 
     def OWSearchBus(self):
         """
@@ -749,72 +755,86 @@ def _check_OW() -> bool:
             time.sleep(0.001)
     return False
 
-def set_output_konfig(kanal,adresse):
+def set_output_konfig(kanal,adresse) -> bool:
     if adresse <0x24 or adresse > 0x27:
         log("Modul adresse ungueltig","ERROR")
-        return
-        
+        return False
+
     if kanal <0 or kanal > 3:
         log("Kanal ungueltig","ERROR")
-        return
+        return False
     #Konfiguration als Ausgangsmodul:
-    try:        
-        plexer.writeByteData(kanal,adresse,bankAKonfig,outputKonfig)
-        plexer.writeByteData(kanal,adresse,bankBKonfig,outputKonfig)   
+    try:
+        ergebnis = [
+            plexer.writeByteData(kanal,adresse,bankAKonfig,outputKonfig),
+            plexer.writeByteData(kanal,adresse,bankBKonfig,outputKonfig)
+        ]
+        if not all(ergebnis):
+            log(f"Output-Konfiguration unvollstaendig (Kanal {kanal}, Addr {hex(adresse)})","ERROR")
+            return False
         log("Adresse: " +str(hex(adresse)) + " - Port A + B als Output gesetzt")
+        return True
     except Exception as e:
         log(f"Fehler beim Output konfigurieren (Kanal {kanal}, Addr {hex(adresse)}): {e}","ERROR")
+        return False
 
-def set_pwm_konfig(kanal, adresse):
+def set_pwm_konfig(kanal, adresse) -> bool:
     if adresse <0x50 or adresse > 0x5f:
         log("Modul adresse ungueltig: {0}".format(adresse),"ERROR")
-        return
-    
+        return False
+
     if kanal <0 or kanal > 3:
         log("Kanal ungueltig","ERROR")
-        return
+        return False
     try:
-        log("Adresse: {0} - PWM Konfig gesetzt".format(hex(adresse)))
-        
-        #Mode1 = sleep  Register 0  Wert = 16
-        plexer.writeByteData(kanal,adresse,0x00,0x10)
         #prescale: round((25.000.000/(4096*Freuqnz))-1) Frequenz aus Konfig lesen!
         prescale=round((25000000/(4096*freqStd))-1)
-        plexer.writeByteData(kanal,adresse,0xFE,prescale)
-        #mode1 = sleep Register 0  Wert=32
-        plexer.writeByteData(kanal,adresse,0x00,0x20)
-        #mode2 = Ausgang Register 1  Wert = 4
-        plexer.writeByteData(kanal,adresse,0x01,0x04)        
+        ergebnis = [
+            #Mode1 = sleep  Register 0  Wert = 16
+            plexer.writeByteData(kanal,adresse,0x00,0x10),
+            plexer.writeByteData(kanal,adresse,0xFE,prescale),
+            #mode1 = sleep Register 0  Wert=32
+            plexer.writeByteData(kanal,adresse,0x00,0x20),
+            #mode2 = Ausgang Register 1  Wert = 4
+            plexer.writeByteData(kanal,adresse,0x01,0x04)
+        ]
+        if not all(ergebnis):
+            log(f"PWM-Konfiguration unvollstaendig (Kanal {kanal}, Addr {hex(adresse)})","ERROR")
+            return False
+        log("Adresse: {0} - PWM Konfig gesetzt".format(hex(adresse)))
+        return True
     except Exception as e:
         log(f"Fehler beim PWM konfigurieren (Kanal {kanal}, Addr {hex(adresse)}): {e}","ERROR")
+        return False
     
-def set_input_konfig(kanal,adresse):
+def set_input_konfig(kanal,adresse) -> bool:
     if adresse <0x20 or adresse > 0x23:
         log("Modul adresse ungueltig","ERROR")
-        return
-        
+        return False
+
     if kanal <0 or kanal > 3:
         log("Kanal ungueltig","ERROR")
-        return
+        return False
     #Konfiguration als Eingangsmodul:
     try:
-        plexer.writeByteData(kanal,adresse,bankAKonfig,inputKonfig)
-        plexer.writeByteData(kanal,adresse,bankBKonfig,inputKonfig)
-        plexer.writeByteData(kanal,adresse,IOCONA,0x44)
-        plexer.writeByteData(kanal,adresse,IOCONB,0x44)
-        plexer.writeByteData(kanal,adresse,DEFVALA,0x00)
-        plexer.writeByteData(kanal,adresse,DEFVALB,0x00)
-        plexer.writeByteData(kanal,adresse,INTCONA,0x00)
-        plexer.writeByteData(kanal,adresse,INTCONB,0x00)
-        plexer.writeByteData(kanal,adresse,GPPUA,0x00)
-        plexer.writeByteData(kanal,adresse,GPPUB,0x00)
-        plexer.writeByteData(kanal,adresse,IPOLA,0x00)
-        plexer.writeByteData(kanal,adresse,IPOLB,0x00)
-        plexer.writeByteData(kanal,adresse,GPINTENA,0xFF)
-        plexer.writeByteData(kanal,adresse,GPINTENB,0xFF)
+        register = [
+            (bankAKonfig, inputKonfig), (bankBKonfig, inputKonfig),
+            (IOCONA, 0x44), (IOCONB, 0x44),
+            (DEFVALA, 0x00), (DEFVALB, 0x00),
+            (INTCONA, 0x00), (INTCONB, 0x00),
+            (GPPUA, 0x00), (GPPUB, 0x00),
+            (IPOLA, 0x00), (IPOLB, 0x00),
+            (GPINTENA, 0xFF), (GPINTENB, 0xFF)
+        ]
+        ergebnis = [plexer.writeByteData(kanal,adresse,reg,wert) for reg, wert in register]
+        if not all(ergebnis):
+            log(f"Input-Konfiguration unvollstaendig (Kanal {kanal}, Addr {hex(adresse)})","ERROR")
+            return False
         log("Adresse:{0} - Port A + B als Input gesetzt".format(hex(adresse)),"INFO")
+        return True
     except Exception as e:
         log(f"Fehler beim Input konfigurieren (Kanal {kanal}, Addr {hex(adresse)}): {e}","ERROR")
+        return False
 
 
 def _ow_read_raw(address: str):
@@ -2386,35 +2406,43 @@ def modulSuche(delete=0):
         tmpANA=""
         for device in range(128):
             try:
-                if (plexer.readByte(kanalSearch,device)!= None):
+                if (plexer.readByte(kanalSearch,device,quiet=True)!= None):
                     if device!=mux and device!=DS2482.I2C_ADDR:
                         if device>=0x20 and device <=0x23:
                             log("GeCoS 16 In : Kanal: {0} Adresse: {1}".format(kanalSearch,hex(device)))
                             tmpIN=tmpIN+hex(device)+";"
                             if device not in modules['in'][kanalSearch]:
+                                if not set_input_konfig(kanalSearch,device):
+                                    log("Kanal {0} Adresse {1}: Modul antwortet, laesst sich aber nicht konfigurieren - wird ignoriert".format(kanalSearch,hex(device)),"ERROR")
+                                    continue
                                 modules['in'][kanalSearch].append(device)
-                                set_input_konfig(kanalSearch,device)
                             publish_command_event("MOD", channel=kanalSearch, address=hex(device), module_type="IN")
                         elif device>=0x24 and device <=0x27:
                             log("GeCoS 16 OUT: Kanal: {0} Adresse: {1}".format(kanalSearch,hex(device)))
                             tmpOut=tmpOut+hex(device)+";"
                             if device not in modules['out'][kanalSearch]:
+                                if not set_output_konfig(kanalSearch,device):
+                                    log("Kanal {0} Adresse {1}: Modul antwortet, laesst sich aber nicht konfigurieren - wird ignoriert".format(kanalSearch,hex(device)),"ERROR")
+                                    continue
                                 modules['out'][kanalSearch].append(device)
-                                set_output_konfig(kanalSearch,device)
                             publish_command_event("MOD", channel=kanalSearch, address=hex(device), module_type="OUT")
                         elif device>=0x50 and device <=0x57:
                             log("GeCoS 16 PWM: Kanal: {0} Adresse: {1}".format(kanalSearch,hex(device)))
                             tmpPWM=tmpPWM+hex(device)+";"
                             if device not in modules['pwm'][kanalSearch]:
+                                if not set_pwm_konfig(kanalSearch,device):
+                                    log("Kanal {0} Adresse {1}: Modul antwortet, laesst sich aber nicht konfigurieren - wird ignoriert".format(kanalSearch,hex(device)),"ERROR")
+                                    continue
                                 modules['pwm'][kanalSearch].append(device)
-                                set_pwm_konfig(kanalSearch,device)
                             publish_command_event("MOD", channel=kanalSearch, address=hex(device), module_type="PWM")
                         elif device>=0x58 and device <=0x5f:
                             log("GeCoS 16 RGBW: Kanal: {0} Adresse: {1}".format(kanalSearch,hex(device)))
                             tmpRGBW=tmpRGBW+hex(device)+";"
                             if device not in modules['rgbw'][kanalSearch]:
+                                if not set_pwm_konfig(kanalSearch,device):
+                                    log("Kanal {0} Adresse {1}: Modul antwortet, laesst sich aber nicht konfigurieren - wird ignoriert".format(kanalSearch,hex(device)),"ERROR")
+                                    continue
                                 modules['rgbw'][kanalSearch].append(device)
-                                set_pwm_konfig(kanalSearch,device)
                             publish_command_event("MOD", channel=kanalSearch, address=hex(device), module_type="RGBW")
                         elif device>=0x68 and device <=0x6b:
                             log("GeCoS Analog4: Kanal: {0} Adresse: {1}".format(kanalSearch,hex(device)))
@@ -2529,11 +2557,14 @@ if __name__ == '__main__':
     #OneWire-Bus scannen, bei HA anmelden und zyklisches Auslesen starten:
     OWSearchDevice()
     threading.Thread(target=ow_poll_loop, daemon=True).start()
-    #RTC Lesen:
+    #RTC Lesen (optional - ohne bestueckte RTC laeuft der Server normal weiter):
     ds = DS1307(plexer, 0x68)
-    rtctime = ds.read_datetime()
-    temp = ds.read_temp()
-    log ("DS3231 Date: {0} Temp: {1} ".format(rtctime.strftime("%d.%m.%Y %H:%M:%S"),str(temp)))
+    try:
+        rtctime = ds.read_datetime()
+        temp = ds.read_temp()
+        log ("DS3231 Date: {0} Temp: {1} ".format(rtctime.strftime("%d.%m.%Y %H:%M:%S"),str(temp)))
+    except Exception as exc:
+        log(f"RTC auf Kanal 3 / 0x68 nicht lesbar, wird uebersprungen: {exc}", "WARNING")
     while True:
         try:
             # Alle Eingänge lesen
