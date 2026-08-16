@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 #Bei jeder Aenderung hochzaehlen - wird beim Start geloggt, damit sichtbar ist,
 #welcher Stand tatsaechlich installiert ist.
-__version__ = "2026.08.16-ow5"
+__version__ = "2026.08.16-ow6"
 
 # Status Variable 16IN 1x pro Bus mit 8 Werten
 stat_in = {
@@ -72,6 +72,7 @@ I2C_ADR_DS2482 = 0x18  # Adresse DS2482
 # OneWire Family-Codes
 OW_FAMILY_TEMPERATURE = ("28", "10", "3b")  # DS18B20, DS18S20, MAX31850
 OW_FAMILY_SWITCH = "3a"                     # DS2413
+OW_MODELS = {"28": "DS18B20", "10": "DS18S20", "3b": "MAX31850", "3a": "DS2413"}
 
 
 def _ow_address_string(device_address) -> str:
@@ -1679,23 +1680,60 @@ def publish_ha_discovery() -> None:
     if not all([ha_prefix, state_inputs, state_outputs, availability, command_topic]):
         return
     device_id = mqtt_settings.get("client_id", "gecos-server")
-    device_info = {
+    bridge_info = {
         "identifiers": [device_id],
         "name": mqtt_settings.get("device_name", "GeCoS Server"),
         "manufacturer": "GeCoS",
-        "model": "I2C Controller",
-        "sw_version": "MQTT"
+        "model": "Gebaeudebus-Server",
+        "sw_version": __version__
     }
+
+    def modul_info(art: str, kanal: int, adresse: int, modell: str) -> Dict[str, Any]:
+        """Eigenes HA-Geraet je I2C-Modul, haengt per via_device unter dem Server"""
+        return {
+            "identifiers": [f"{device_id}_{art}_{kanal}_{adresse:02x}"],
+            "name": f"GeCoS {art.upper()} {kanal}-{adresse:02x}",
+            "manufacturer": "GeCoS",
+            "model": modell,
+            "via_device": device_id
+        }
+
+    def ow_info(address: str) -> Dict[str, Any]:
+        """Eigenes HA-Geraet je OneWire-Sensor"""
+        return {
+            "identifiers": [f"{device_id}_ow_{address.replace('-', '_')}"],
+            "name": f"GeCoS 1Wire {address}",
+            "manufacturer": "GeCoS",
+            "model": OW_MODELS.get(address.split("-")[0].lower(), "OneWire"),
+            "via_device": device_id
+        }
+
     desired_topics: Set[str] = set()
+    # Server selbst anmelden - ohne eigene Entity existiert das Elterngeraet nicht,
+    # auf das sich via_device der Module bezieht.
+    object_id = f"{device_id}_status"
+    config_topic = f"{ha_prefix}/binary_sensor/{object_id}/config"
+    desired_topics.add(config_topic)
+    mqtt_publish(config_topic, {
+        "name": "Verbindung",
+        "state_topic": availability,
+        "payload_on": "online",
+        "payload_off": "offline",
+        "device_class": "connectivity",
+        "entity_category": "diagnostic",
+        "unique_id": object_id,
+        "device": bridge_info
+    }, retain=True)
     # Inputs als Binary Sensoren anmelden
     for kanal, addresses in modules['in'].items():
         for adresse in addresses:
+            device_info = modul_info("in", kanal, adresse, "MCP23017")
             for bit in range(16):
                 object_id = f"{device_id}_in_{kanal}_{adresse:02x}_{bit}"
                 config_topic = f"{ha_prefix}/binary_sensor/{object_id}/config"
                 desired_topics.add(config_topic)
                 payload = {
-                    "name": f"GeCoS IN {kanal}-{adresse:02x} #{bit:02d}",
+                    "name": f"Eingang {bit:02d}",
                     "state_topic": f"{state_inputs}/{kanal}/{adresse:02x}/{bit}",
                     "payload_on": "ON",
                     "payload_off": "OFF",
@@ -1707,12 +1745,13 @@ def publish_ha_discovery() -> None:
     # Outputs als Switches anmelden
     for kanal, addresses in modules['out'].items():
         for adresse in addresses:
+            device_info = modul_info("out", kanal, adresse, "MCP23017")
             for bit in range(16):
                 object_id = f"{device_id}_out_{kanal}_{adresse:02x}_{bit}"
                 config_topic = f"{ha_prefix}/switch/{object_id}/config"
                 desired_topics.add(config_topic)
                 payload = {
-                    "name": f"GeCoS OUT {kanal}-{adresse:02x} #{bit:02d}",
+                    "name": f"Ausgang {bit:02d}",
                     "state_topic": f"{state_outputs}/{kanal}/{adresse:02x}/{bit}",
                     "command_topic": f"{command_topic}/output/{kanal}/{adresse:02x}/{bit}",
                     "payload_on": "ON",
@@ -1726,12 +1765,13 @@ def publish_ha_discovery() -> None:
     if state_pwm:
         for kanal, addresses in modules['pwm'].items():
             for adresse in addresses:
+                device_info = modul_info("pwm", kanal, adresse, "PCA9685")
                 for channel in range(16):
                     object_id = f"{device_id}_pwm_{kanal}_{adresse:02x}_{channel}"
                     config_topic = f"{ha_prefix}/light/{object_id}/config"
                     desired_topics.add(config_topic)
                     payload = {
-                        "name": f"GeCoS PWM {kanal}-{adresse:02x} #{channel:02d}",
+                        "name": f"Kanal {channel:02d}",
                         "schema": "json",
                         "state_topic": f"{state_pwm}/{kanal}/{adresse:02x}/{channel}",
                         "command_topic": f"{command_topic}/pwm/{kanal}/{adresse:02x}/{channel}",
@@ -1750,12 +1790,13 @@ def publish_ha_discovery() -> None:
     if state_analog:
         for kanal, addresses in modules['ana'].items():
             for adresse in addresses:
+                device_info = modul_info("ana", kanal, adresse, "MCP3424")
                 for channel in range(4):
                     object_id = f"{device_id}_ana_{kanal}_{adresse:02x}_{channel}"
                     config_topic = f"{ha_prefix}/sensor/{object_id}/config"
                     desired_topics.add(config_topic)
                     payload = {
-                        "name": f"GeCoS ANA {kanal}-{adresse:02x} CH{channel}",
+                        "name": f"Kanal {channel:02d}",
                         "state_topic": f"{state_analog}/{kanal}/{adresse:02x}/{channel}",
                         "availability_topic": availability,
                         "unique_id": object_id,
@@ -1770,6 +1811,7 @@ def publish_ha_discovery() -> None:
         for address in modules['ow']:
             family = address.split("-")[0].lower()
             slug = address.replace("-", "_")
+            device_info = ow_info(address)
             availability_ow = [
                 {"topic": availability},
                 {"topic": f"{state_ow}/{address}/status"}
@@ -1779,7 +1821,7 @@ def publish_ha_discovery() -> None:
                 config_topic = f"{ha_prefix}/sensor/{object_id}/config"
                 desired_topics.add(config_topic)
                 payload = {
-                    "name": f"GeCoS 1Wire {address}",
+                    "name": "Temperatur",
                     "state_topic": f"{state_ow}/{address}/temperature",
                     "availability": availability_ow,
                     "availability_mode": "all",
@@ -1796,7 +1838,7 @@ def publish_ha_discovery() -> None:
                     config_topic = f"{ha_prefix}/switch/{object_id}/config"
                     desired_topics.add(config_topic)
                     payload = {
-                        "name": f"GeCoS 1Wire {address} PIO {pin.upper()}",
+                        "name": f"PIO {pin.upper()}",
                         "state_topic": f"{state_ow}/{address}/{pin}",
                         "command_topic": f"{command_topic}/onewire/{address}/{pin}",
                         "payload_on": "ON",
