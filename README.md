@@ -19,15 +19,16 @@ GeCoS-Server steuert die GeCoS-I2C- und OneWire-Module eines Gebaeudebus-Systems
 Installiere die Python-Abhaengigkeiten typischerweise mit:
 
 ```bash
-sudo apt install python3-smbus python3-pip
-pip3 install --upgrade paho-mqtt
+sudo apt install git python3-smbus python3-paho-mqtt
 ```
+
+Seit Raspberry Pi OS Bookworm ist das System-Python nach PEP 668 geschuetzt, `pip3 install` bricht dort mit `externally-managed-environment` ab. Nimm deshalb das Debian-Paket. **Kein Upgrade auf paho-mqtt 2.x**: dessen Client-Konstruktor verlangt eine `CallbackAPIVersion` und die Callback-Signaturen haben sich geaendert — der Server startet damit nicht. Installierte Version pruefen mit `python3 -c "import paho.mqtt as p; print(p.__version__)"`.
 
 ## Schnellstart
 1. Repository klonen und Skript kopieren:
    ```bash
-   git clone https://github.com/bgersmann/GeCoS-Server-MQTT.git
-   cd GeCoS-Server-MQTT
+   git clone https://github.com/bgersmann/GeCoS-Server-MQTT-HA.git
+   cd GeCoS-Server-MQTT-HA
    sudo cp GeCoS-Server.py /usr/local/bin/
    sudo chmod +x /usr/local/bin/GeCoS-Server.py
    ```
