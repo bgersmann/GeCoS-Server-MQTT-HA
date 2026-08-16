@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 #Bei jeder Aenderung hochzaehlen - wird beim Start geloggt, damit sichtbar ist,
 #welcher Stand tatsaechlich installiert ist.
-__version__ = "2026.08.16-ow2"
+__version__ = "2026.08.16-ow4"
 
 # Status Variable 16IN 1x pro Bus mit 8 Werten
 stat_in = {
@@ -98,12 +98,46 @@ class DS2482:
         self._owTripletSecondBit = 0
         self._owLastDevice = 0
         self._owLastDiscrepancy = 0
+        self._owLastStatus = None
         try:
             #Geraete-Reset nach dem Einschalten, sonst kann der erste Bus-Reset scheitern
             self.DS2482Reset()
             time.sleep(0.001)
+            self.DS2482SetConfig(mqtt_settings.get("ow_active_pullup", True))
         except Exception as e:
             log(f"DS2482 auf {hex(self.I2C_ADDR)} nicht erreichbar: {e}", "ERROR")
+
+    def DS2482SetConfig(self, apu: bool = True) -> bool:
+        """
+        Schreibt das Konfigurationsregister (0xD2)
+
+        Args:
+            apu: Aktiver Pull-up. Ohne externen 4,7k-Pull-up zwingend noetig,
+                 sonst erreicht die 1Wire-Leitung nie sauber High-Pegel.
+        """
+        try:
+            config = 0x01 if apu else 0x00
+            #Unteres Nibble = Konfiguration, oberes Nibble = deren Einerkomplement
+            self._bus.write_byte_data(self.I2C_ADDR, 0xD2, ((~config & 0x0F) << 4) | config)
+            log("DS2482 Konfiguration gesetzt (aktiver Pull-up: {0})".format("ein" if apu else "aus"), "INFO")
+            return True
+        except Exception as e:
+            log(f"DS2482 Konfiguration fehlgeschlagen: {e}", "ERROR")
+            return False
+
+    def OWStatusText(self) -> str:
+        """Uebersetzt das zuletzt gelesene Statusregister in Klartext"""
+        data = self._owLastStatus
+        if data is None:
+            return "DS2482 antwortet nicht ueber I2C"
+        if data & 0x01:
+            return f"1Wire-Bus dauerhaft belegt (Status 0x{data:02x})"
+        if data & 0x04:
+            return f"Kurzschluss auf der 1Wire-Leitung (Status 0x{data:02x})"
+        if not (data & 0x02):
+            return (f"kein Presence-Pulse (Status 0x{data:02x}) - kein Sensor angeschlossen, "
+                    "fehlender Pull-up oder keine Versorgung am Strang")
+        return f"Status 0x{data:02x}"
 
     def OWSearchBus(self):
         """
@@ -143,7 +177,8 @@ class DS2482:
         data=""    
         while (True):
             loopcount+=1
-            data=self.OWStatusRegister() 
+            data=self.OWStatusRegister()
+            self._owLastStatus = data
             if (data is None):
                 #Fehler beim Lesen
                 return 0
@@ -978,7 +1013,10 @@ def OWSearchDevice():
     modules['ow'].clear()
     modules['ow'].extend(found)
     configSchreiben('Module OneWire', 'GECOSOW', "".join(f"{a};" for a in found))
-    log("OneWire Geräte gefunden: {0}".format(len(found)), "INFO")
+    if found:
+        log("OneWire Geräte gefunden: {0}".format(len(found)), "INFO")
+    else:
+        log("OneWire Bus leer: {0}".format(dsOW.OWStatusText()), "WARNING")
     publish_ha_discovery()
     threading.Thread(target=ow_read_all, daemon=True).start()
 
@@ -1549,7 +1587,8 @@ def init_mqtt(args) -> None:
         "ha_prefix": ha_prefix,
         "device_name": device_name,
         "keepalive": args.mqtt_keepalive,
-        "ow_interval": max(0, args.ow_interval)
+        "ow_interval": max(0, args.ow_interval),
+        "ow_active_pullup": not args.ow_no_active_pullup
     }
     mqtt_topics = {
         "base": base_topic,
@@ -1615,7 +1654,7 @@ def publish_ha_discovery() -> None:
                 config_topic = f"{ha_prefix}/binary_sensor/{object_id}/config"
                 desired_topics.add(config_topic)
                 payload = {
-                    "name": f"GeCoS IN {kanal}-{adresse:02x} #{bit}",
+                    "name": f"GeCoS IN {kanal}-{adresse:02x} #{bit:02d}",
                     "state_topic": f"{state_inputs}/{kanal}/{adresse:02x}/{bit}",
                     "payload_on": "ON",
                     "payload_off": "OFF",
@@ -1632,7 +1671,7 @@ def publish_ha_discovery() -> None:
                 config_topic = f"{ha_prefix}/switch/{object_id}/config"
                 desired_topics.add(config_topic)
                 payload = {
-                    "name": f"GeCoS OUT {kanal}-{adresse:02x} #{bit}",
+                    "name": f"GeCoS OUT {kanal}-{adresse:02x} #{bit:02d}",
                     "state_topic": f"{state_outputs}/{kanal}/{adresse:02x}/{bit}",
                     "command_topic": f"{command_topic}/output/{kanal}/{adresse:02x}/{bit}",
                     "payload_on": "ON",
@@ -1651,13 +1690,12 @@ def publish_ha_discovery() -> None:
                     config_topic = f"{ha_prefix}/light/{object_id}/config"
                     desired_topics.add(config_topic)
                     payload = {
-                        "name": f"GeCoS PWM {kanal}-{adresse:02x} #{channel}",
+                        "name": f"GeCoS PWM {kanal}-{adresse:02x} #{channel:02d}",
                         "schema": "json",
                         "state_topic": f"{state_pwm}/{kanal}/{adresse:02x}/{channel}",
                         "command_topic": f"{command_topic}/pwm/{kanal}/{adresse:02x}/{channel}",
                         "brightness": True,
                         "brightness_scale": 100,
-                        "supported_color_modes": ["brightness"],
                         "availability_topic": availability,
                         "unique_id": object_id,
                         "device": device_info,
@@ -2491,6 +2529,7 @@ if __name__ == '__main__':
     parser.add_argument('--ha-prefix', default=os.getenv('HA_PREFIX', 'homeassistant'), help='Home Assistant Discovery Prefix')
     parser.add_argument('--device-name', default=os.getenv('GECOS_DEVICE_NAME', 'GeCoS Server'), help='Anzeigename des Geräts für Home Assistant')
     parser.add_argument('--ow-interval', type=int, default=int(os.getenv('OW_INTERVAL', '30')), help='Abfrageintervall der OneWire-Geräte in Sekunden, 0 deaktiviert das Polling (Default: 30)')
+    parser.add_argument('--ow-no-active-pullup', action='store_true', help='Aktiven Pull-up des DS2482 abschalten (nur bei starkem externen Pull-up sinnvoll)')
     args = parser.parse_args()
     if not args.ha_discovery:
         env_discovery = os.getenv('HA_DISCOVERY', '').lower()

@@ -66,6 +66,7 @@ Der Server laeuft mit paho-mqtt 1.x **und** 2.x. Unter 2.x wird die Callback-API
 | `--ha-prefix` | Discovery-Prefix (Default `homeassistant`) | `HA_PREFIX` |
 | `--device-name` | Anzeigename innerhalb von Home Assistant | `GECOS_DEVICE_NAME` |
 | `--ow-interval` | Abfrageintervall der OneWire-Geraete in Sekunden, `0` deaktiviert das Polling (Default `30`) | `OW_INTERVAL` |
+| `--ow-no-active-pullup` | Aktiven Pull-up des DS2482 abschalten (nur bei starkem externen Pull-up sinnvoll) | – |
 
 ### Systemd-Service
 Die mitgelieferte `gecos.service` uebernehmen und starten:
