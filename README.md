@@ -25,13 +25,21 @@ sudo apt install git python3-smbus python3-paho-mqtt
 Seit Raspberry Pi OS Bookworm ist das System-Python nach PEP 668 geschuetzt, `pip3 install` bricht dort mit `externally-managed-environment` ab. Nimm deshalb das Debian-Paket. **Kein Upgrade auf paho-mqtt 2.x**: dessen Client-Konstruktor verlangt eine `CallbackAPIVersion` und die Callback-Signaturen haben sich geaendert — der Server startet damit nicht. Installierte Version pruefen mit `python3 -c "import paho.mqtt as p; print(p.__version__)"`.
 
 ## Schnellstart
-1. Repository klonen und Skript kopieren:
+1. Dateien holen und installieren — entweder per `wget` (kein git noetig, das Repository ist oeffentlich):
+   ```bash
+   cd ~
+   wget https://raw.githubusercontent.com/bgersmann/GeCoS-Server-MQTT-HA/main/GeCoS-Server.py \
+        https://raw.githubusercontent.com/bgersmann/GeCoS-Server-MQTT-HA/main/Mux.py \
+        https://raw.githubusercontent.com/bgersmann/GeCoS-Server-MQTT-HA/main/gecos.service
+   sudo install -m 755 ~/GeCoS-Server.py ~/Mux.py /usr/local/bin/
+   ```
+   ... oder per Klon:
    ```bash
    git clone https://github.com/bgersmann/GeCoS-Server-MQTT-HA.git
    cd GeCoS-Server-MQTT-HA
-   sudo cp GeCoS-Server.py /usr/local/bin/
-   sudo chmod +x /usr/local/bin/GeCoS-Server.py
+   sudo install -m 755 GeCoS-Server.py Mux.py /usr/local/bin/
    ```
+   `Mux.py` muss zwingend mit: `GeCoS-Server.py` importiert es und findet es nur, wenn es im selben Verzeichnis liegt. Zum Aktualisieren spaeter reicht ein erneutes `wget -N`.
 2. Server manuell testen:
    ```bash
    python3 /usr/local/bin/GeCoS-Server.py \
@@ -57,7 +65,16 @@ Seit Raspberry Pi OS Bookworm ist das System-Python nach PEP 668 geschuetzt, `pi
 | `--device-name` | Anzeigename innerhalb von Home Assistant | `GECOS_DEVICE_NAME` |
 | `--ow-interval` | Abfrageintervall der OneWire-Geraete in Sekunden, `0` deaktiviert das Polling (Default `30`) | `OW_INTERVAL` |
 
-### Systemd-Service (Beispiel)
+### Systemd-Service
+Die mitgelieferte `gecos.service` uebernehmen und starten:
+
+```bash
+sudo install -m 644 ~/gecos.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now gecos.service
+```
+
+Aufbau der Unit (Broker, Basistopic und OneWire-Intervall dort anpassen oder ueber `/etc/default/gecos-server` setzen):
 
 ```ini
 [Unit]
@@ -76,7 +93,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
-Aktivierung wie gewohnt via `sudo systemctl enable --now gecos.service`.
+Logs verfolgen mit `journalctl -u gecos.service -f`.
 
 ## MQTT-Topics
 Alle Topics haengen unter dem konfigurierten Basistopic (Standard `gecos/server`). Die wichtigsten Pfade:
