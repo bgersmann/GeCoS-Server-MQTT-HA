@@ -22,7 +22,9 @@ Installiere die Python-Abhaengigkeiten typischerweise mit:
 sudo apt install git python3-smbus python3-paho-mqtt
 ```
 
-Seit Raspberry Pi OS Bookworm ist das System-Python nach PEP 668 geschuetzt, `pip3 install` bricht dort mit `externally-managed-environment` ab. Nimm deshalb das Debian-Paket. **Kein Upgrade auf paho-mqtt 2.x**: dessen Client-Konstruktor verlangt eine `CallbackAPIVersion` und die Callback-Signaturen haben sich geaendert — der Server startet damit nicht. Installierte Version pruefen mit `python3 -c "import paho.mqtt as p; print(p.__version__)"`.
+Seit Raspberry Pi OS Bookworm ist das System-Python nach PEP 668 geschuetzt, `pip3 install` bricht dort mit `externally-managed-environment` ab. Nimm deshalb das Debian-Paket.
+
+Der Server laeuft mit paho-mqtt 1.x **und** 2.x. Unter 2.x wird die Callback-API-Version 1 explizit angefordert; die Bibliothek meldet dazu einmalig eine `DeprecationWarning`, die folgenlos ist.
 
 ## Schnellstart
 1. Dateien holen und installieren — entweder per `wget` (kein git noetig, das Repository ist oeffentlich):

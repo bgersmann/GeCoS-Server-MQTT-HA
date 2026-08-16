@@ -1538,7 +1538,12 @@ def init_mqtt(args) -> None:
         "analog": f"{base_topic}/analog",
         "onewire": f"{base_topic}/onewire"
     }
-    mqtt_client = mqtt.Client(client_id=mqtt_settings["client_id"])
+    #paho-mqtt 2.x erwartet die Callback-Version als erstes Argument, 1.x kennt den Parameter nicht
+    callback_api = getattr(mqtt, "CallbackAPIVersion", None)
+    if callback_api is not None:
+        mqtt_client = mqtt.Client(callback_api.VERSION1, client_id=mqtt_settings["client_id"])
+    else:
+        mqtt_client = mqtt.Client(client_id=mqtt_settings["client_id"])
     if mqtt_settings["username"]:
         mqtt_client.username_pw_set(mqtt_settings["username"], mqtt_settings["password"])
     mqtt_client.on_connect = on_mqtt_connect
@@ -1549,7 +1554,7 @@ def init_mqtt(args) -> None:
     try:
         mqtt_client.connect(mqtt_settings["host"], mqtt_settings["port"], keepalive=mqtt_settings["keepalive"])
     except Exception as exc:
-        log(f"MQTT Verbindung fehlgeschlagen: {exc}", "ERROR")
+        log(f"MQTT Verbindung zu {mqtt_settings['host']}:{mqtt_settings['port']} fehlgeschlagen: {exc}", "ERROR")
         raise
     mqtt_client.loop_start()
     if not mqtt_connected.wait(timeout=10):
