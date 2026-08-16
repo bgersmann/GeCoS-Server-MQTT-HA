@@ -8,6 +8,7 @@ Verwaltet die Kommunikation über I2C-Multiplexer
 import smbus
 import time
 import logging
+import threading
 from typing import Optional, List
 from enum import IntEnum
 
@@ -46,6 +47,9 @@ class Multiplex:
         """
         self.bus = smbus.SMBus(bus)
         self._status_i2c = 1
+        #Kanalwahl und Transfer sind zwei getrennte I2C-Vorgaenge und muessen
+        #zusammen atomar ablaufen - sonst schiebt sich ein anderer Thread dazwischen.
+        self._lock = threading.RLock()
         logger.info(f"Multiplexer initialisiert auf Bus {bus}")
     
     @property
@@ -117,20 +121,21 @@ class Multiplex:
         Returns:
             bool: True bei Erfolg, False bei Fehler
         """
-        if not self._check_i2c():
-            return False
+        with self._lock:
+            if not self._check_i2c():
+                return False
         
-        self._status_i2c = 0
-        try:
-            self.select_channel(kanal)
-            time.sleep(self.I2C_RETRY_DELAY)
-            self.bus.write_byte_data(address, register, wert)
-            return True
-        except Exception as e:
-            logger.error(f"Fehler beim Schreiben (Kanal={kanal}, Addr={hex(address)}, Reg={hex(register)}): {e}")
-            return False
-        finally:
-            self._status_i2c = 1
+            self._status_i2c = 0
+            try:
+                self.select_channel(kanal)
+                time.sleep(self.I2C_RETRY_DELAY)
+                self.bus.write_byte_data(address, register, wert)
+                return True
+            except Exception as e:
+                logger.error(f"Fehler beim Schreiben (Kanal={kanal}, Addr={hex(address)}, Reg={hex(register)}): {e}")
+                return False
+            finally:
+                self._status_i2c = 1
 
     def read_byte(self, kanal: int, address: int, quiet: bool = False) -> Optional[int]:
         """
@@ -145,20 +150,21 @@ class Multiplex:
         Returns:
             Optional[int]: Gelesener Wert oder None bei Fehler
         """
-        if not self._check_i2c():
-            return None
+        with self._lock:
+            if not self._check_i2c():
+                return None
 
-        self._status_i2c = 0
-        try:
-            self.select_channel(kanal)
-            wert = self.bus.read_byte(address)
-            return wert
-        except Exception as e:
-            logger.log(logging.DEBUG if quiet else logging.ERROR,
-                       f"Fehler beim Lesen (Kanal={kanal}, Addr={hex(address)}): {e}")
-            return None
-        finally:
-            self._status_i2c = 1
+            self._status_i2c = 0
+            try:
+                self.select_channel(kanal)
+                wert = self.bus.read_byte(address)
+                return wert
+            except Exception as e:
+                logger.log(logging.DEBUG if quiet else logging.ERROR,
+                           f"Fehler beim Lesen (Kanal={kanal}, Addr={hex(address)}): {e}")
+                return None
+            finally:
+                self._status_i2c = 1
 
     def read_byte_data(self, kanal: int, address: int, register: int) -> Optional[int]:
         """
@@ -172,19 +178,20 @@ class Multiplex:
         Returns:
             Optional[int]: Gelesener Wert oder None bei Fehler
         """
-        if not self._check_i2c():
-            return None
+        with self._lock:
+            if not self._check_i2c():
+                return None
         
-        self._status_i2c = 0
-        try:
-            self.select_channel(kanal)
-            wert = self.bus.read_byte_data(address, register)
-            return wert
-        except Exception as e:
-            logger.error(f"Fehler beim Lesen (Kanal={kanal}, Addr={hex(address)}, Reg={hex(register)}): {e}")
-            return None
-        finally:
-            self._status_i2c = 1
+            self._status_i2c = 0
+            try:
+                self.select_channel(kanal)
+                wert = self.bus.read_byte_data(address, register)
+                return wert
+            except Exception as e:
+                logger.error(f"Fehler beim Lesen (Kanal={kanal}, Addr={hex(address)}, Reg={hex(register)}): {e}")
+                return None
+            finally:
+                self._status_i2c = 1
 
     def read_block_data(self, kanal: int, address: int, register: int, cnt: int) -> List[int]:
         """
@@ -199,19 +206,20 @@ class Multiplex:
         Returns:
             List[int]: Liste der gelesenen Werte oder [0x00, ...] bei Fehler
         """
-        if not self._check_i2c():
-            return [0x00] * cnt
+        with self._lock:
+            if not self._check_i2c():
+                return [0x00] * cnt
         
-        self._status_i2c = 0
-        try:
-            self.select_channel(kanal)
-            wert = self.bus.read_i2c_block_data(address, register, cnt)
-            return wert
-        except Exception as e:
-            logger.error(f"Fehler beim Block-Lesen (Kanal={kanal}, Addr={hex(address)}, Cnt={cnt}): {e}")
-            return [0x00] * cnt
-        finally:
-            self._status_i2c = 1
+            self._status_i2c = 0
+            try:
+                self.select_channel(kanal)
+                wert = self.bus.read_i2c_block_data(address, register, cnt)
+                return wert
+            except Exception as e:
+                logger.error(f"Fehler beim Block-Lesen (Kanal={kanal}, Addr={hex(address)}, Cnt={cnt}): {e}")
+                return [0x00] * cnt
+            finally:
+                self._status_i2c = 1
 
     def write_byte(self, kanal: int, address: int, register: int) -> bool:
         """
@@ -225,19 +233,20 @@ class Multiplex:
         Returns:
             bool: True bei Erfolg, False bei Fehler
         """
-        if not self._check_i2c():
-            return False
+        with self._lock:
+            if not self._check_i2c():
+                return False
         
-        self._status_i2c = 0
-        try:
-            self.select_channel(kanal)
-            self.bus.write_byte(address, register)
-            return True
-        except Exception as e:
-            logger.error(f"Fehler beim Byte-Schreiben (Kanal={kanal}, Addr={hex(address)}): {e}")
-            return False
-        finally:
-            self._status_i2c = 1
+            self._status_i2c = 0
+            try:
+                self.select_channel(kanal)
+                self.bus.write_byte(address, register)
+                return True
+            except Exception as e:
+                logger.error(f"Fehler beim Byte-Schreiben (Kanal={kanal}, Addr={hex(address)}): {e}")
+                return False
+            finally:
+                self._status_i2c = 1
     
     # Rückwärtskompatibilität - Alte Methodennamen
     def channel(self, channel: int = 0) -> None:

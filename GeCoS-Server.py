@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 #Bei jeder Aenderung hochzaehlen - wird beim Start geloggt, damit sichtbar ist,
 #welcher Stand tatsaechlich installiert ist.
-__version__ = "2026.08.16-ow6"
+__version__ = "2026.08.16-ow10"
 
 # Status Variable 16IN 1x pro Bus mit 8 Werten
 stat_in = {
@@ -1069,14 +1069,18 @@ def read_output(kanal,adresse):
         return
 
     value = None
+    sStatus=""
     try:
         #Bytes fuer Bank A + B auslesen
         iOutA=plexer.readByteData(kanal,adresse,bankA)
         iOutB=plexer.readByteData(kanal,adresse,bankB)
-        iOut = [iOutB, iOutA]
-        value=int.from_bytes(iOut,"big")
-        sStatus="OK"
-        publish_output_bits(kanal, adresse, value)
+        if iOutA is None or iOutB is None:
+            sStatus="Rueckmeldung nicht lesbar"
+            log(f"Output lesen fehlgeschlagen (Kanal {kanal}, Addr {hex(adresse)})","ERROR")
+        else:
+            value=(iOutB << 8) | iOutA
+            sStatus="OK"
+            publish_output_bits(kanal, adresse, value)
     except OSError as err:
         sStatus=str(err)
         log("I/O error: {0}".format(err),"ERROR")
@@ -1103,20 +1107,32 @@ def set_output(arr):
         publish_command_event("SOM", channel=kanal, address=hex(adresse), value=value, status="Kanal ungueltig")
         return
     status=""
+    sStatus=""
     try:
-        #Bytes fuer Bank A + B auslesen
-        iOutA=plexer.readByteData(kanal,adresse,bankA)
-        iOutB=plexer.readByteData(kanal,adresse,bankB)
         tmpArrOut=value.to_bytes(2,"big") if value is not None else (0).to_bytes(2,"big")
         iOutA=tmpArrOut[1]
         iOutB=tmpArrOut[0]
-        plexer.writeByteData(kanal,adresse,bankA,iOutA)
-        plexer.writeByteData(kanal,adresse,bankB,iOutB)
-        #Prüfen und antworten.
-        iOutA=plexer.readByteData(kanal,adresse,bankA)
-        iOutB=plexer.readByteData(kanal,adresse,bankB)
-        publish_output_bits(kanal, adresse, (iOutB << 8) | iOutA)
-        sStatus="OK"      
+        geschrieben = [
+            plexer.writeByteData(kanal,adresse,bankA,iOutA),
+            plexer.writeByteData(kanal,adresse,bankB,iOutB)
+        ]
+        if not all(geschrieben):
+            sStatus="Schreiben fehlgeschlagen"
+            log(f"Output schreiben fehlgeschlagen (Kanal {kanal}, Addr {hex(adresse)})","ERROR")
+        else:
+            #Prüfen und antworten.
+            istA=plexer.readByteData(kanal,adresse,bankA)
+            istB=plexer.readByteData(kanal,adresse,bankB)
+            if istA is None or istB is None:
+                #Rueckmeldung nicht lesbar: trotzdem den geschriebenen Wert melden,
+                #sonst bleibt das State-Topic auf dem alten Stand stehen und die
+                #Oberflaeche springt zurueck.
+                log(f"Output-Rueckmeldung nicht lesbar (Kanal {kanal}, Addr {hex(adresse)}), melde Sollwert","WARNING")
+                publish_output_bits(kanal, adresse, (iOutB << 8) | iOutA, force=True)
+                sStatus="OK ohne Rueckmeldung"
+            else:
+                publish_output_bits(kanal, adresse, (istB << 8) | istA, force=True)
+                sStatus="OK"
     except OSError as err:
         sStatus=str(err)
         log("I/O error: {0}".format(err),"ERROR")
@@ -1198,17 +1214,25 @@ def publish_input_bits(kanal: int, adresse: int, value: int) -> None:
     input_state_cache[(kanal, adresse)] = value
 
 
-def publish_output_bits(kanal: int, adresse: int, value: int) -> None:
+def publish_output_bits(kanal: int, adresse: int, value: int, force: bool = False) -> None:
+    """
+    Veroeffentlicht den Zustand aller 16 Ausgangsbits
+
+    Args:
+        force: Auch dann senden, wenn sich nichts geaendert hat. Noetig nach einem
+               Schaltbefehl - sonst bekommt eine Oberflaeche, deren Anzeige vom
+               Istzustand abweicht, nie eine Bestaetigung und springt zurueck.
+    """
     topic_base = mqtt_topics.get("outputs")
     if topic_base is None:
         return
     old_value = output_state_cache.get((kanal, adresse))
-    if old_value == value:
+    if old_value == value and not force:
         return
     for bit in range(16):
         mask = 1 << bit
         new_state = bool(value & mask)
-        if old_value is None or new_state != bool(old_value & mask):
+        if force or old_value is None or new_state != bool(old_value & mask):
             topic = f"{topic_base}/{kanal}/{adresse:02x}/{bit}"
             mqtt_publish(topic, "ON" if new_state else "OFF", retain=True)
     output_state_cache[(kanal, adresse)] = value
@@ -1409,6 +1433,8 @@ def handle_output_command(channel_str: str, address_str: str, bit_str: str, payl
         read_output(kanal, adresse)
         current_value = output_state_cache.get((kanal, adresse), 0)
     new_value = set_bit(current_value, bit, state)
+    log("Schaltbefehl Kanal {0} Addr {1} Bit {2} -> {3} (Wert 0x{4:04x} -> 0x{5:04x})".format(
+        kanal, hex(adresse), bit, "ON" if state else "OFF", current_value, new_value), "INFO")
     arr = ["SOM", str(kanal), hex(adresse), str(new_value)]
     set_output(arr)
 
@@ -1523,6 +1549,7 @@ def on_mqtt_connect(client: mqtt.Client, _userdata, _flags, rc: int) -> None:
         availability = mqtt_topics.get("availability")
         if command_topic:
             client.subscribe(f"{command_topic}/#")
+            log(f"Abonniert: {command_topic}/#", "INFO")
         if availability:
             mqtt_publish(availability, "online", retain=True)
         log("MQTT Verbindung hergestellt", "INFO")
@@ -1586,6 +1613,7 @@ def on_mqtt_message(_client: mqtt.Client, _userdata, msg) -> None:
         return
     prefix = f"{command_prefix}/"
     if msg.topic.startswith(prefix):
+        log(f"MQTT empfangen: {msg.topic} = {payload}", "INFO")
         command_path = msg.topic[len(prefix):]
         if command_path.startswith("raw"):
             handle_raw_command(payload)
@@ -1738,6 +1766,8 @@ def publish_ha_discovery() -> None:
                     "payload_on": "ON",
                     "payload_off": "OFF",
                     "availability_topic": availability,
+                    "payload_available": "online",
+                    "payload_not_available": "offline",
                     "unique_id": object_id,
                     "device": device_info
                 }
@@ -1756,7 +1786,11 @@ def publish_ha_discovery() -> None:
                     "command_topic": f"{command_topic}/output/{kanal}/{adresse:02x}/{bit}",
                     "payload_on": "ON",
                     "payload_off": "OFF",
+                    "state_on": "ON",
+                    "state_off": "OFF",
                     "availability_topic": availability,
+                    "payload_available": "online",
+                    "payload_not_available": "offline",
                     "unique_id": object_id,
                     "device": device_info
                 }
@@ -1781,6 +1815,8 @@ def publish_ha_discovery() -> None:
                         #"nur Helligkeit, keine Farbe" - ohne die Zeile faellt der Regler weg
                         "supported_color_modes": ["brightness"],
                         "availability_topic": availability,
+                        "payload_available": "online",
+                        "payload_not_available": "offline",
                         "unique_id": object_id,
                         "device": device_info,
                         "icon": "mdi:led-strip-variant"
@@ -1799,6 +1835,8 @@ def publish_ha_discovery() -> None:
                         "name": f"Kanal {channel:02d}",
                         "state_topic": f"{state_analog}/{kanal}/{adresse:02x}/{channel}",
                         "availability_topic": availability,
+                        "payload_available": "online",
+                        "payload_not_available": "offline",
                         "unique_id": object_id,
                         "device": device_info,
                         "device_class": "voltage",
@@ -2685,6 +2723,12 @@ if __name__ == '__main__':
     #Modulsuche:
     modulSuche(1)
     
+    #Istzustand der Ausgaenge und Dimmer einlesen und veroeffentlichen. Ohne das
+    #bleiben die retained State-Topics bis zum ersten Schaltbefehl auf einem alten
+    #Stand, und die Oberflaeche zeigt etwas anderes als die Hardware.
+    ReadOutAll()
+    pwmAll()
+
     #OneWire:
     dsOW = DS2482()
     #OneWire-Bus scannen, bei HA anmelden und zyklisches Auslesen starten:
