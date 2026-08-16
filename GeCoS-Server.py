@@ -30,6 +30,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+#Bei jeder Aenderung hochzaehlen - wird beim Start geloggt, damit sichtbar ist,
+#welcher Stand tatsaechlich installiert ist.
+__version__ = "2026.08.16-ow2"
+
 # Status Variable 16IN 1x pro Bus mit 8 Werten
 stat_in = {
     0: [0] * 8,
@@ -2471,7 +2475,7 @@ def bit_from_string(string, index):
 
 if __name__ == '__main__':
     # Konfig Werte MCP:
-    log("Script gestartet", "ERROR")
+    log("Script gestartet - Version {0} ({1})".format(__version__, os.path.abspath(__file__)), "ERROR")
     
     # ArgParser:
     parser = argparse.ArgumentParser(description='GeCoS-Server - Gebäudecontrol System')
