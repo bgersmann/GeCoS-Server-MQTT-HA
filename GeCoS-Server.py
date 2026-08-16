@@ -48,18 +48,33 @@ input_state_cache: Dict[Tuple[int, int], int] = {}
 output_state_cache: Dict[Tuple[int, int], int] = {}
 pwm_state_cache: Dict[Tuple[int, int, int], Tuple[int, int]] = {}
 analog_state_cache: Dict[Tuple[int, int, int], float] = {}
+ow_state_cache: Dict[str, Any] = {}
+ow_avail_cache: Dict[str, bool] = {}
+ow_lock = threading.RLock()
 ha_discovery_topics: Set[str] = set()
 
-# Module-Arrays pro Kanal
+# Module-Arrays pro Kanal ('ow' haengt am DS2482 und kennt keine Kanaele)
 modules = {
     'in': {0: [], 1: [], 2: []},
     'out': {0: [], 1: [], 2: []},
     'pwm': {0: [], 1: [], 2: []},
     'rgbw': {0: [], 1: [], 2: []},
-    'ana': {0: [], 1: [], 2: []}
+    'ana': {0: [], 1: [], 2: []},
+    'ow': []
 }
 
 I2C_ADR_DS2482 = 0x18  # Adresse DS2482
+
+# OneWire Family-Codes
+OW_FAMILY_TEMPERATURE = ("28", "10", "3b")  # DS18B20, DS18S20, MAX31850
+OW_FAMILY_SWITCH = "3a"                     # DS2413
+
+
+def _ow_address_string(device_address) -> str:
+    """Formatiert eine OneWire-ROM-Adresse als '<family>-<crc+serie>'"""
+    raw = ((device_address[0] << 32) | (device_address[1] & 0xFFFFFFFF)) & 0xFFFFFFFFFFFFFFFF
+    hexstr = f"{raw:016x}"
+    return f"{hexstr[-2:]}-{hexstr[:14]}"
 
 # DS2482 - OneWire-Bridge-Klasse
 class DS2482:
@@ -81,16 +96,25 @@ class DS2482:
         self._owLastDiscrepancy = 0
 
     def OWSearchBus(self):
-        """Sucht alle OneWire-Geräte auf dem Bus"""
+        """
+        Sucht alle OneWire-Geräte auf dem Bus
+
+        Returns:
+            Optional[List[str]]: Gefundene Adressen, None bei Abbruch
+        """
+        found: List[str] = []
         try:
             while self.OWSearch() == 1:
-                device = hex(self._owDeviceAddress[1] & 0xFF)[2:4] + "-" + hex(self._owDeviceAddress[0] << 32 | (self._owDeviceAddress[1]))[2:16]
+                device = _ow_address_string(self._owDeviceAddress)
+                found.append(device)
                 publish_command_event("OWS", device=device)
-                log("Gerät gefanden: " + str(device), "INFO")
+                log("Gerät gefunden: " + str(device), "INFO")
             publish_command_event("OWS", status="END")
+            return found
         except Exception as e:
             publish_command_event("OWS", status="ERROR", message=str(e))
             log(f"Fehler bei OWS Suche: {e}", "ERROR")
+            return None
 
     def DS2482Reset(self):
         """Setzt den DS2482 zurück"""
@@ -358,6 +382,8 @@ class DS2482:
 
     def DS2413OWSetConfig(self,data):
         try:
+            if not (self.OWReset()): #Match ROM benoetigt vorher einen Bus-Reset
+                return False
             self.OWSelect()
             self.OWWriteByte(0x5a)
             self.OWWriteByte(data)
@@ -371,6 +397,8 @@ class DS2482:
     def DS18B20OWSetConfig(self,res):
         try:
             # 31, 63, 95, 127 9/10/11/12Bit
+            if not (self.OWReset()): #Match ROM benoetigt vorher einen Bus-Reset
+                return False
             self.OWSelect()
             self.OWWriteByte(78)
             self.OWWriteByte(0)
@@ -426,11 +454,11 @@ class DS2482:
             celsius = raw / 16.0
             if (SignBit):
                 celsius = celsius * (-1)
-            device=hex(self._owDeviceAddress[1]& 0xFF)[2:4] + "-" + hex(self._owDeviceAddress[0]<<32 | (self._owDeviceAddress[1]))[2:16]
+            device=_ow_address_string(self._owDeviceAddress)
             #log("Device: " + str(device) + " Temp: " + str(celsius),"INFO")
         except Exception as e:
             celsius=-85
-            device=hex(self._owDeviceAddress[1]& 0xFF)[2:4] + "-" + hex(self._owDeviceAddress[0]<<32 | (self._owDeviceAddress[1]))[2:16]
+            device=_ow_address_string(self._owDeviceAddress)
             log(f"Fehler 1Wire DS18B20 {device}: {e}","ERROR")
         finally:
             return celsius
@@ -444,7 +472,7 @@ class DS2482:
                     result = self.OWReadByte()
         except Exception as e:
             result=-85
-            device=hex(self._owDeviceAddress[1]& 0xFF)[2:4] + "-" + hex(self._owDeviceAddress[0]<<32 | (self._owDeviceAddress[1]))[2:16]
+            device=_ow_address_string(self._owDeviceAddress)
             log(f"Fehler 1Wire DS2413 {device}: {e}","ERROR")
         finally:
             return result
@@ -472,16 +500,16 @@ class DS2482:
 
             if (data[0]&0X01==1): # Auf fehler prüfen
                 celsius=-85
-                device=hex(self._owDeviceAddress[1]& 0xFF)[2:4] + "-" + hex(self._owDeviceAddress[0]<<32 | (self._owDeviceAddress[1]))[2:16]
+                device=_ow_address_string(self._owDeviceAddress)
                 log("Device: " + str(device) + " Temp: " + str(celsius),"ERROR")
                 return celsius
 
             celsius= raw * 0.0625
-            device=hex(self._owDeviceAddress[1]& 0xFF)[2:4] + "-" + hex(self._owDeviceAddress[0]<<32 | (self._owDeviceAddress[1]))[2:16]
+            device=_ow_address_string(self._owDeviceAddress)
             #log("Device: " + str(device) + " Temp: " + str(celsius),"INFO")
         except Exception as e:
             celsius=-85
-            device=hex(self._owDeviceAddress[1]& 0xFF)[2:4] + "-" + hex(self._owDeviceAddress[0]<<32 | (self._owDeviceAddress[1]))[2:16]
+            device=_ow_address_string(self._owDeviceAddress)
             log(f"Fehler 1Wire MAX31850 {device}: {e}","ERROR")
         finally:
             return celsius
@@ -512,11 +540,11 @@ class DS2482:
             celsius = raw / 2.0
             if (SignBit):
                 celsius = celsius * (-1)
-            device=hex(self._owDeviceAddress[1]& 0xFF)[2:4] + "-" + hex(self._owDeviceAddress[0]<<32 | (self._owDeviceAddress[1]))[2:16]
+            device=_ow_address_string(self._owDeviceAddress)
             #log("Device: " + str(device) + " Temp: " + str(celsius),"INFO")
         except Exception as e:
             celsius=-85
-            device=hex(self._owDeviceAddress[1]& 0xFF)[2:4] + "-" + hex(self._owDeviceAddress[0]<<32 | (self._owDeviceAddress[1]))[2:16]
+            device=_ow_address_string(self._owDeviceAddress)
             log(f"Fehler 1Wire DS18S20 {device}: {e}","ERROR")
         finally:
             return celsius
@@ -789,129 +817,167 @@ def set_input_konfig(kanal,adresse):
         log(f"Fehler beim Input konfigurieren (Kanal {kanal}, Addr {hex(adresse)}): {e}","ERROR")
 
 
-def OWReadDevice(arr):
-    """Liest Daten von OneWire-Geräten"""
+def _ow_read_raw(address: str):
+    """
+    Liest einen OneWire-Sensor am DS2482
+
+    Returns:
+        Tuple[Any, str]: (Wert, Status). Der Wert -85 signalisiert einen Fehler.
+    """
     global status_ow
-    x = arr[1].split("-")
-    status = ""
-    value = ""
-    
-    if x[0] == "28":
-        if _check_OW():
-            status_ow = 0
-            if dsOW.OWSelectAdress(arr[1]) == True:
-                temp = dsOW.DS18B20OWReadTemp()               
-                value = temp
-                status = "OK"
-            else:      
-                log("Fehler beim Adresse einstellen", "INFO")
-                value = -85
-                status = "Fehler bei Adresse einstellen"
-            status_ow = 1
-        else:
-            value = -85
-            status = "Fehler OW Bus belegt"
-    elif x[0] == "10":
-        if _check_OW():
-            status_ow = 0
-            if dsOW.OWSelectAdress(arr[1]) == True:
-                temp = dsOW.DS18S20OWReadTemp()
-                value = temp
-                status = "OK"
-            else:      
-                log("Fehler beim Adresse einstellen", "INFO")
-                value = -85
-                status = "Fehler bei Adresse einstellen"
-            status_ow = 1
-        else:
-            value = -85
-            status = "Fehler OW Bus belegt"
-    elif x[0] == "3a":
-        if _check_OW():
-            status_ow = 0
-            if dsOW.OWSelectAdress(arr[1]) == True:
-                result = dsOW.DS2413GetState()
-                value = result
-                status = "OK"
-            else:      
-                log("Fehler beim Adresse einstellen", "INFO")
-                value = -85
-                status = "Fehler bei Adresse einstellen"
-            status_ow = 1
-        else:
-            value = -85
-            status = "Fehler OW Bus belegt"
-    elif x[0] == "3b":
-        if _check_OW():
-            status_ow = 0
-            if dsOW.OWSelectAdress(arr[1]) == True:
-                result = dsOW.MAX31850OWReadTemp()
-                value = result
-                status = "OK"
-            else:      
-                log("Fehler beim Adresse einstellen", "INFO")
-                value = -85
-                status = "Fehler bei Adresse einstellen"
-            status_ow = 1
-        else:
-            value = -85
-            status = "Fehler OW Bus belegt"            
-    else:
+    family = address.split("-")[0].lower()
+    if family not in OW_FAMILY_TEMPERATURE and family != OW_FAMILY_SWITCH:
         log("OneWire Typ nicht unterstützt", "INFO")
-        value = -85
-        status = "Typ nicht untersützt"
-    
-    publish_command_event("OWV", address=arr[1], value=value, status=status)
-  
+        return -85, "Typ nicht untersützt"
+    with ow_lock:
+        if not _check_OW():
+            return -85, "Fehler OW Bus belegt"
+        status_ow = 0
+        try:
+            if dsOW.OWSelectAdress(address) != True:
+                log("Fehler beim Adresse einstellen", "INFO")
+                return -85, "Fehler bei Adresse einstellen"
+            if family == "28":
+                return dsOW.DS18B20OWReadTemp(), "OK"
+            if family == "10":
+                return dsOW.DS18S20OWReadTemp(), "OK"
+            if family == "3b":
+                return dsOW.MAX31850OWReadTemp(), "OK"
+            return dsOW.DS2413GetState(), "OK"
+        finally:
+            status_ow = 1
+
+
+def _ow_write_switch(address: str, value: int) -> str:
+    """Schreibt das PIO-Latch-Byte eines DS2413 und liefert den Status zurueck"""
+    global status_ow
+    with ow_lock:
+        if not _check_OW():
+            return "Fehler OW Bus belegt"
+        status_ow = 0
+        try:
+            if dsOW.OWSelectAdress(address) != True:
+                log("Fehler beim Adresse einstellen", "INFO")
+                return "Fehlerhafte OW Adresse"
+            return "OK" if dsOW.DS2413OWSetConfig(value) == True else "FEHLER"
+        finally:
+            status_ow = 1
+
+
+def OWReadDevice(arr):
+    """Liest Daten von OneWire-Geräten und veröffentlicht sie über MQTT"""
+    address = arr[1]
+    value, status = _ow_read_raw(address)
+    publish_ow_state(address, value, status)
+    publish_command_event("OWV", address=address, value=value, status=status)
+
+
 def OWConfigDevice(arr):
     """Konfiguriert OneWire-Geräte"""
     global status_ow
-    x = arr[1].split("-")
+    address = arr[1]
+    family = address.split("-")[0].lower()
     status = ""
-    
-    if x[0] == "28":
-        if _check_OW():
-            status_ow = 0
-            if dsOW.OWSelectAdress(arr[1]) == True:
-                if dsOW.DS18B20OWSetConfig(int(arr[2])) == True:
-                    status = "OK"
+
+    if family == "28":
+        with ow_lock:
+            if _check_OW():
+                status_ow = 0
+                if dsOW.OWSelectAdress(address) == True:
+                    if dsOW.DS18B20OWSetConfig(int(arr[2])) == True:
+                        status = "OK"
+                    else:
+                        status = "FEHLER"
                 else:
-                    status = "FEHLER"
-            else:      
-                log("Fehler beim Adresse einstellen", "INFO")
-                status = "Fehlerhafte OW Adresse"
-            status_ow = 1
-        else:
-            status = "Fehler OW Bus belegt"
-    elif x[0] == "3a":
-        if _check_OW():
-            status_ow = 0
-            if dsOW.OWSelectAdress(arr[1]) == True:
-                if dsOW.DS2413OWSetConfig(int(arr[2])) == True:
-                    status = "OK"
-                else:
-                    status = "FEHLER"
-            else:      
-                log("Fehler beim Adresse einstellen", "INFO")
-                status = "Fehlerhafte OW Adresse"
-            status_ow = 1
-        else:
-            status = "Fehler OW Bus belegt"            
+                    log("Fehler beim Adresse einstellen", "INFO")
+                    status = "Fehlerhafte OW Adresse"
+                status_ow = 1
+            else:
+                status = "Fehler OW Bus belegt"
+    elif family == OW_FAMILY_SWITCH:
+        status = _ow_write_switch(address, int(arr[2]))
     else:
         log("OneWire Typ nicht unterstützt", "INFO")
         status = "Typ nicht untersützt"
-    
-    publish_command_event("OWC", address=arr[1], value=arr[2] if len(arr) > 2 else None, status=status)
+
+    publish_command_event("OWC", address=address, value=arr[2] if len(arr) > 2 else None, status=status)
+    if family == OW_FAMILY_SWITCH and status == "OK":
+        #Ist-Zustand nachlesen, damit Home Assistant den Schaltvorgang bestaetigt bekommt
+        value, read_status = _ow_read_raw(address)
+        publish_ow_state(address, value, read_status)
+
+
+def OWSetSwitch(address: str, pin: str, state: bool) -> None:
+    """Schaltet einen einzelnen DS2413-Ausgang, ohne den zweiten zu veraendern"""
+    cached = ow_state_cache.get(address)
+    if cached is None:
+        value, status = _ow_read_raw(address)
+        publish_ow_state(address, value, status)
+        cached = ow_state_cache.get(address)
+        if cached is None:
+            log(f"OneWire Zustand von {address} unbekannt, Schaltbefehl verworfen", "ERROR")
+            return
+    pin_a = _ow_latch_is_on(cached, "a")
+    pin_b = _ow_latch_is_on(cached, "b")
+    if pin == "a":
+        pin_a = state
+    else:
+        pin_b = state
+    #Open-Drain: Latch-Bit 0 = Ausgang aktiv, Bits 2-7 laut Datenblatt auf 1
+    value = 0xFC
+    if not pin_a:
+        value |= 0x01
+    if not pin_b:
+        value |= 0x02
+    OWConfigDevice(["OWC", address, str(value)])
+
 
 def OWSearchDevice():
-    """Sucht nach OneWire-Geräten auf dem Bus"""
+    """Sucht nach OneWire-Geräten auf dem Bus und meldet sie bei Home Assistant an"""
     global status_ow
-    if _check_OW():
+    with ow_lock:
+        if not _check_OW():
+            log("OneWire Bus Belegt", "INFO")
+            return
         status_ow = 0
-        dsOW.OWSearchBus()
-        status_ow = 1
-    else:
-        log("OneWire Bus Belegt", "INFO")
+        try:
+            found = dsOW.OWSearchBus()
+        finally:
+            status_ow = 1
+    if found is None:
+        #Abgebrochene Suche darf die bekannten Geräte nicht verwerfen
+        return
+    for address in list(ow_state_cache):
+        if address not in found:
+            ow_state_cache.pop(address, None)
+            ow_avail_cache.pop(address, None)
+    modules['ow'].clear()
+    modules['ow'].extend(found)
+    configSchreiben('Module OneWire', 'GECOSOW', "".join(f"{a};" for a in found))
+    log("OneWire Geräte gefunden: {0}".format(len(found)), "INFO")
+    publish_ha_discovery()
+    threading.Thread(target=ow_read_all, daemon=True).start()
+
+
+def ow_read_all() -> None:
+    """Liest alle bekannten OneWire-Geräte einmal aus"""
+    for address in list(modules['ow']):
+        try:
+            value, status = _ow_read_raw(address)
+            publish_ow_state(address, value, status)
+        except Exception as exc:
+            log(f"Fehler beim OneWire Lesen {address}: {exc}", "ERROR")
+
+
+def ow_poll_loop() -> None:
+    """Zyklisches Auslesen aller OneWire-Geräte"""
+    interval = mqtt_settings.get("ow_interval", 0)
+    if interval <= 0:
+        return
+    while True:
+        time.sleep(interval)
+        ow_read_all()
+
 
 def thread_interrupt(pin):
     threading.Thread(target=interrutpKanal, args=(pin,), daemon=True).start()
@@ -924,6 +990,9 @@ def thread_OW_config(arr):
 
 def thread_OW_Search():
     threading.Thread(target=OWSearchDevice, daemon=True).start()
+
+def thread_OW_switch(address, pin, state):
+    threading.Thread(target=OWSetSwitch, args=(address, pin, state), daemon=True).start()
 
 def read_output(kanal,adresse):
     if adresse <0x24 or adresse > 0x27:
@@ -1115,6 +1184,52 @@ def publish_analog_value(kanal: int, adresse: int, channel: int, value: float) -
     topic = f"{topic_base}/{kanal}/{adresse:02x}/{channel}"
     mqtt_publish(topic, f"{rounded}", retain=True)
     analog_state_cache[key] = rounded
+
+
+def _ow_latch_is_on(state_byte: int, pin: str) -> bool:
+    """DS2413: Latch-Bit 0 bedeutet Ausgang aktiv (Open-Drain schaltet nach Masse)"""
+    mask = 0x02 if pin == "a" else 0x08
+    return not bool(int(state_byte) & mask)
+
+
+def publish_ow_availability(address: str, available: bool) -> None:
+    """Meldet pro OneWire-Gerät, ob der letzte Lesevorgang erfolgreich war."""
+    topic_base = mqtt_topics.get("onewire")
+    if topic_base is None:
+        return
+    if ow_avail_cache.get(address) == available:
+        return
+    mqtt_publish(f"{topic_base}/{address}/status", "online" if available else "offline", retain=True)
+    ow_avail_cache[address] = available
+
+
+def publish_ow_state(address: str, value: Any, status: str) -> None:
+    """Veröffentlicht Messwert bzw. Schaltzustand eines OneWire-Geräts."""
+    topic_base = mqtt_topics.get("onewire")
+    if topic_base is None:
+        return
+    family = address.split("-")[0].lower()
+    try:
+        available = status == "OK" and float(value) != -85
+    except (TypeError, ValueError):
+        available = False
+    publish_ow_availability(address, available)
+    if not available:
+        return
+    if family in OW_FAMILY_TEMPERATURE:
+        rounded = round(float(value), 2)
+        if ow_state_cache.get(address) == rounded:
+            return
+        mqtt_publish(f"{topic_base}/{address}/temperature", f"{rounded}", retain=True)
+        ow_state_cache[address] = rounded
+    elif family == OW_FAMILY_SWITCH:
+        state_byte = int(value)
+        if ow_state_cache.get(address) == state_byte:
+            return
+        for pin in ("a", "b"):
+            payload = "ON" if _ow_latch_is_on(state_byte, pin) else "OFF"
+            mqtt_publish(f"{topic_base}/{address}/{pin}", payload, retain=True)
+        ow_state_cache[address] = state_byte
 
 
 def notify_invalid_command(arr: List[str], reason: str) -> None:
@@ -1319,6 +1434,25 @@ def handle_pwm_command(channel_str: str, address_str: str, pwm_channel_str: str,
     set_pwm(arr)
 
 
+def handle_ow_command(address: str, pin: str, payload: str) -> None:
+    pin = pin.lower()
+    if pin not in ("a", "b"):
+        log(f"Ungültiger OneWire-Pin: {pin}", "ERROR")
+        return
+    if address.split("-")[0].lower() != OW_FAMILY_SWITCH:
+        log(f"OneWire-Gerät {address} ist kein schaltbarer Ausgang", "ERROR")
+        return
+    normalized = (payload or "").strip().upper()
+    if normalized in ("1", "ON", "TRUE"):
+        state = True
+    elif normalized in ("0", "OFF", "FALSE"):
+        state = False
+    else:
+        log(f"Ungültiger OneWire-Payload: {payload}", "ERROR")
+        return
+    thread_OW_switch(address, pin, state)
+
+
 def on_mqtt_connect(client: mqtt.Client, _userdata, _flags, rc: int) -> None:
     if rc == 0:
         mqtt_connected.set()
@@ -1363,6 +1497,12 @@ def on_mqtt_message(_client: mqtt.Client, _userdata, msg) -> None:
                 handle_pwm_command(parts[1], parts[2], parts[3], payload)
             else:
                 log(f"Ungültiges PWM-Topic: {msg.topic}", "ERROR")
+        elif command_path.startswith("onewire/"):
+            parts = command_path.split("/")
+            if len(parts) == 3:
+                handle_ow_command(parts[1], parts[2], payload)
+            else:
+                log(f"Ungültiges OneWire-Topic: {msg.topic}", "ERROR")
         else:
             log(f"Unbekanntes MQTT Topic: {msg.topic}", "DEBUG")
 
@@ -1384,7 +1524,8 @@ def init_mqtt(args) -> None:
         "ha_discovery": args.ha_discovery,
         "ha_prefix": ha_prefix,
         "device_name": device_name,
-        "keepalive": args.mqtt_keepalive
+        "keepalive": args.mqtt_keepalive,
+        "ow_interval": max(0, args.ow_interval)
     }
     mqtt_topics = {
         "base": base_topic,
@@ -1394,7 +1535,8 @@ def init_mqtt(args) -> None:
         "inputs": f"{base_topic}/inputs",
         "outputs": f"{base_topic}/outputs",
         "pwm": f"{base_topic}/pwm",
-        "analog": f"{base_topic}/analog"
+        "analog": f"{base_topic}/analog",
+        "onewire": f"{base_topic}/onewire"
     }
     mqtt_client = mqtt.Client(client_id=mqtt_settings["client_id"])
     if mqtt_settings["username"]:
@@ -1422,6 +1564,7 @@ def publish_ha_discovery() -> None:
     state_outputs = mqtt_topics.get("outputs")
     state_pwm = mqtt_topics.get("pwm")
     state_analog = mqtt_topics.get("analog")
+    state_ow = mqtt_topics.get("onewire")
     availability = mqtt_topics.get("availability")
     command_topic = mqtt_topics.get("command")
     if not all([ha_prefix, state_inputs, state_outputs, availability, command_topic]):
@@ -1511,6 +1654,51 @@ def publish_ha_discovery() -> None:
                         "unit_of_measurement": "V"
                     }
                     mqtt_publish(config_topic, payload, retain=True)
+    # OneWire-Geraete anmelden (Temperatur als Sensor, DS2413 als zwei Switches)
+    if state_ow:
+        for address in modules['ow']:
+            family = address.split("-")[0].lower()
+            slug = address.replace("-", "_")
+            availability_ow = [
+                {"topic": availability},
+                {"topic": f"{state_ow}/{address}/status"}
+            ]
+            if family in OW_FAMILY_TEMPERATURE:
+                object_id = f"{device_id}_ow_{slug}"
+                config_topic = f"{ha_prefix}/sensor/{object_id}/config"
+                desired_topics.add(config_topic)
+                payload = {
+                    "name": f"GeCoS 1Wire {address}",
+                    "state_topic": f"{state_ow}/{address}/temperature",
+                    "availability": availability_ow,
+                    "availability_mode": "all",
+                    "unique_id": object_id,
+                    "device": device_info,
+                    "device_class": "temperature",
+                    "state_class": "measurement",
+                    "unit_of_measurement": "°C"
+                }
+                mqtt_publish(config_topic, payload, retain=True)
+            elif family == OW_FAMILY_SWITCH:
+                for pin in ("a", "b"):
+                    object_id = f"{device_id}_ow_{slug}_{pin}"
+                    config_topic = f"{ha_prefix}/switch/{object_id}/config"
+                    desired_topics.add(config_topic)
+                    payload = {
+                        "name": f"GeCoS 1Wire {address} PIO {pin.upper()}",
+                        "state_topic": f"{state_ow}/{address}/{pin}",
+                        "command_topic": f"{command_topic}/onewire/{address}/{pin}",
+                        "payload_on": "ON",
+                        "payload_off": "OFF",
+                        "availability": availability_ow,
+                        "availability_mode": "all",
+                        "unique_id": object_id,
+                        "device": device_info,
+                        "icon": "mdi:electric-switch"
+                    }
+                    mqtt_publish(config_topic, payload, retain=True)
+            else:
+                log(f"OneWire {address}: Family-Code ohne HA-Entity", "DEBUG")
     stale = ha_discovery_topics - desired_topics
     for topic in stale:
         mqtt_publish(topic, "", retain=True)
@@ -2265,6 +2453,7 @@ if __name__ == '__main__':
     parser.add_argument('--ha-discovery', action='store_true', help='MQTT Discovery für Home Assistant aktivieren')
     parser.add_argument('--ha-prefix', default=os.getenv('HA_PREFIX', 'homeassistant'), help='Home Assistant Discovery Prefix')
     parser.add_argument('--device-name', default=os.getenv('GECOS_DEVICE_NAME', 'GeCoS Server'), help='Anzeigename des Geräts für Home Assistant')
+    parser.add_argument('--ow-interval', type=int, default=int(os.getenv('OW_INTERVAL', '30')), help='Abfrageintervall der OneWire-Geräte in Sekunden, 0 deaktiviert das Polling (Default: 30)')
     args = parser.parse_args()
     if not args.ha_discovery:
         env_discovery = os.getenv('HA_DISCOVERY', '').lower()
@@ -2332,6 +2521,9 @@ if __name__ == '__main__':
     
     #OneWire:
     dsOW = DS2482()
+    #OneWire-Bus scannen, bei HA anmelden und zyklisches Auslesen starten:
+    OWSearchDevice()
+    threading.Thread(target=ow_poll_loop, daemon=True).start()
     #RTC Lesen:
     ds = DS1307(plexer, 0x68)
     rtctime = ds.read_datetime()

@@ -1,11 +1,12 @@
 # GeCoS-Server (MQTT Edition)
 
-GeCoS-Server steuert die GeCoS-I2C- und OneWire-Module eines Gebaeudebus-Systems und stellt alle Zustaende sowie Befehle komplett ueber MQTT bereit. Optional erzeugt der Dienst automatisch Home-Assistant-Discovery-Payloads, damit Eingaenge, Ausgaenge, PWM-Dimmer und Analogsensoren ohne manuelle YAML-Konfiguration erscheinen.
+GeCoS-Server steuert die GeCoS-I2C- und OneWire-Module eines Gebaeudebus-Systems und stellt alle Zustaende sowie Befehle komplett ueber MQTT bereit. Optional erzeugt der Dienst automatisch Home-Assistant-Discovery-Payloads, damit Eingaenge, Ausgaenge, PWM-Dimmer, Analogsensoren und OneWire-Geraete ohne manuelle YAML-Konfiguration erscheinen.
 
 ## Highlights
 - Native MQTT-Integration mit getrennten Topics fuer Status, Kommandos und Sensordaten
-- Home Assistant MQTT Discovery fuer Binary-Sensoren, Switches, Light-Dimmer und Analogsensoren
+- Home Assistant MQTT Discovery fuer Binary-Sensoren, Switches, Light-Dimmer, Analogsensoren und OneWire-Temperatursensoren
 - Unterstuetzung fuer MCP23017 (16 IN/OUT), PCA9685 (PWM & RGBW), MCP3424 (Analog), DS2482 + OneWire-Geraete sowie DS1307/DS3231 RTC
+- Zyklisches Auslesen des OneWire-Bus mit eigener Verfuegbarkeitsmeldung pro Sensor
 - Prozentbasierte PWM-Steuerung inklusive automatischer Umrechnung zwischen 0-100 Prozent und 12-Bit-Werten
 - Rueckwaertskompatible "raw"-Kommandos fuer bestehende Integrationen, jetzt ueber MQTT
 
@@ -53,6 +54,7 @@ pip3 install --upgrade paho-mqtt
 | `--ha-discovery` | Schaltet Home Assistant Discovery frei | `HA_DISCOVERY` |
 | `--ha-prefix` | Discovery-Prefix (Default `homeassistant`) | `HA_PREFIX` |
 | `--device-name` | Anzeigename innerhalb von Home Assistant | `GECOS_DEVICE_NAME` |
+| `--ow-interval` | Abfrageintervall der OneWire-Geraete in Sekunden, `0` deaktiviert das Polling (Default `30`) | `OW_INTERVAL` |
 
 ### Systemd-Service (Beispiel)
 
@@ -86,11 +88,17 @@ Alle Topics haengen unter dem konfigurierten Basistopic (Standard `gecos/server`
 | `<base>/outputs/<kanal>/<adresse>/<bit>` | Switch-Status der Ausgaenge |
 | `<base>/pwm/<kanal>/<adresse>/<channel>` | JSON `{state, brightness}` fuer PWM-Kanaele (0-100 %) |
 | `<base>/analog/<kanal>/<adresse>/<channel>` | Analoge Messwerte als String |
+| `<base>/onewire/<adresse>/temperature` | Temperatur in °C (DS18B20, DS18S20, MAX31850) |
+| `<base>/onewire/<adresse>/a` bzw. `/b` | Schaltzustand der beiden DS2413-Ausgaenge (`ON`/`OFF`) |
+| `<base>/onewire/<adresse>/status` | Verfuegbarkeit des einzelnen OneWire-Geraets (`online`/`offline`) |
 | `<base>/command/...` | Befehle an den Server (siehe unten) |
+
+Die OneWire-Adresse hat die Form `<family>-<crc+serie>`, z. B. `28-a601183074cbff`.
 
 ### Befehls-Topics
 - `command/output/<kanal>/<adresse>/<bit>` → Payload `ON`/`OFF` (oder `1`/`0`) schaltet einen Ausgang.
 - `command/pwm/<kanal>/<adresse>/<channel>` → Payload Prozentwert, 0‑4095 oder JSON `{ "state": "ON", "brightness": 42 }` dimmt einen PWM-Kanal.
+- `command/onewire/<adresse>/<a|b>` → Payload `ON`/`OFF` schaltet einen einzelnen DS2413-Ausgang; der jeweils andere Pin bleibt unveraendert.
 - `command/raw` → Fruehere geschweifte Kommando-Strings, jetzt als MQTT-Nachricht (`{SAO;0;0x24}` usw.).
 
 ## Home Assistant Integration
@@ -99,8 +107,17 @@ Aktiviere `--ha-discovery`, damit der Server automatisch folgende Entitaeten reg
 - Switches fuer alle Ausgaenge
 - Light-Dimmer (Brightness-Scale 0‑100 %) fuer PWM-Module
 - Sensoren fuer Analogeingaenge
+- Temperatursensoren fuer DS18B20, DS18S20 und MAX31850 am OneWire-Bus
+- Je zwei Switches pro DS2413 (PIO A und PIO B)
 
 Alle Entities teilen sich die Availability `<base>/status`. Unique IDs basieren auf Kanal, Adresse und Port, wodurch spaetere Re-Pairings ohne Duplikate funktionieren.
+
+### OneWire
+Der OneWire-Bus wird beim Start einmal durchsucht (`OWS`), die gefundenen Geraete landen in `Config.cfg` und werden bei Home Assistant angemeldet. Anschliessend liest ein Hintergrund-Thread alle Geraete im Abstand von `--ow-interval` Sekunden aus und veroeffentlicht die Werte retained. Ein erneutes `OWS`-Kommando aktualisiert die Geraeteliste und die Discovery-Eintraege zur Laufzeit.
+
+Zusaetzlich zur globalen Availability besitzt jedes OneWire-Geraet ein eigenes `status`-Topic. Schlaegt ein Lesevorgang fehl (Rueckgabewert `-85`), wird das Geraet auf `offline` gesetzt und in Home Assistant als *nicht verfuegbar* angezeigt, statt einen falschen Messwert zu liefern.
+
+DS2413-Ausgaenge sind Open-Drain: Das Latch-Bit `0` bedeutet "Ausgang aktiv". Der Server bildet das nach aussen als `ON` ab, ein `ON` in Home Assistant schaltet den Transistor also durch.
 
 ## Unterstuetzte Module & Geraete
 - MCP23017: 16-fach Ein- oder Ausgangsmodule pro I2C-Adresse
